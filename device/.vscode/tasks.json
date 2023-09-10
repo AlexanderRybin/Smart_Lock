@@ -1,0 +1,31 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"type": "cargo",
+			"command": "build",
+			"problemMatcher": [
+				"$rustc"
+			],
+			"group": "build",
+			"label": "rust: cargo build"
+		},
+		{
+            "label": "Build binary",
+            "type": "shell",
+            "command": "arm-none-eabi-objcopy",
+            "args": [
+                "--output-target", "binary",
+                "./target/thumbv7m-none-eabi/debug/device",
+                "device.bin"],
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "dependsOn": "Cargo build"
+        }
+	]
+}

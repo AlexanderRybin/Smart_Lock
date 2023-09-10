@@ -1,0 +1,36 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "cortex-debug.armToolchainPath": "C:\\Program Files (x86)\\GNU Arm Embedded Toolchain\\10 2021.10\\bin",
+    "configurations": [
+        {
+            "name": "device",
+            "cwd": "${workspaceFolder}",
+            "executable": ".\\target\\thumbv7m-none-eabi\\debug\\device",
+            "request": "launch",
+            "type": "cortex-debug",
+            "device": "STM32F103C8",
+            "servertype": "openocd",
+            "serverpath": "C:\\xpack-openocd-0.12.0-1\\bin\\openocd.exe",
+            "configFiles": [
+                "C:\\xpack-openocd-0.12.0-1\\openocd\\scripts\\interface\\stlink.cfg",
+                "C:\\xpack-openocd-0.12.0-1\\openocd\\scripts\\target\\stm32f1x_ch.cfg"
+            ],
+
+            "svdFile": "STM32F103xx.svd",
+
+            "preLaunchTask": "Build binary",         
+
+          
+            "preLaunchCommands": [
+                "monitor init",
+                "monitor reset init",
+                "monitor halt",
+                "monitor flash write_image erase device.bin 0x08000000"
+            ],
+            "postLaunchCommands": ["monitor reset halt"] 
+        }
+    ]
+}

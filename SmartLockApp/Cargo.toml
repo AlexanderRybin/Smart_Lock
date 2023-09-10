@@ -1,0 +1,9 @@
+[workspace]
+
+members = [
+   "smart_lock_server" ,
+   "smart_lock_client" ,
+   "proto",
+   "telegram_bot",
+   "telegram_token",
+]

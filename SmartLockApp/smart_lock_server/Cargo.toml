@@ -1,0 +1,21 @@
+[package]
+name = "smart_lock_server"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+futures = "0.3"
+hyper = { version = "*", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+axum = { version = "0.6.12",  features = ["ws", "tokio"] }
+tower = { version = "0.4", features = ["util"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.68"
+tokio-serial = "5.4.1"
+tokio = { version = "1.18.0", features = ["full", "io-util"] }
+tokio-util = { version = "0.7.8", features = ["codec"] }
+bytes = "1.1.0"
+serialport = "*"
+proto = { path = "../proto"}
