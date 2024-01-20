@@ -6,6 +6,7 @@ use cortex_m::interrupt::Mutex;
 
 use cortex_m::asm::delay;
 use cortex_m_rt::entry;
+use embedded_hal::timer;
 use nb::block;
 use panic_halt as _;
 
@@ -13,8 +14,8 @@ use core::cell::Cell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU8, Ordering, AtomicU16};
 use core::cell::RefCell;
-use stm32f1xx_hal::gpio::{Edge, ExtiPin, Input, PullUp};
-use stm32f1xx_hal::pac::{interrupt, Interrupt, NVIC, TIM2};
+use stm32f1xx_hal::gpio::{Edge, ExtiPin, Input, PullUp, gpioa, gpiob, gpioc, PushPull, Output};
+use stm32f1xx_hal::pac::{interrupt, Interrupt, NVIC, TIM2, TIM3};
 use stm32f1xx_hal::serial::{Rx, Serial, Tx};
 use stm32f1xx_hal::usb::{Peripheral, UsbBus, UsbBusType};
 use stm32f1xx_hal::{pac, prelude::*, pac::USART1,};
@@ -23,8 +24,13 @@ use unwrap_infallible::UnwrapInfallible;
 use usb_device::{bus::UsbBusAllocator, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
+type Int_Pin = gpioa::PA7<Input<PullUp>>;
+static mut RED_BUTTON: Option<Int_Pin> = None;
+
 static mut INT_PIN: MaybeUninit<stm32f1xx_hal::gpio::gpioa::PA7<Input<PullUp>>> =
     MaybeUninit::uninit();
+static mut TIM_ANTI_BOUNCE: Option<CounterMs<TIM2>> = None;
+
 
 static mut USB_BUS: Option<UsbBusAllocator<UsbBusType>> = None;
 static mut USB_SERIAL: Option<usbd_serial::SerialPort<UsbBusType>> = None;
@@ -34,7 +40,14 @@ static mut RX: Option<Rx<USART1>> = None;
 static mut TX: Option<Tx<USART1>> = None;
 
 // Make timer interrupt registers globally available
-static G_TIM: Mutex<RefCell<Option<CounterMs<TIM2>>>> = Mutex::new(RefCell::new(None));
+static G_TIM       : Mutex<RefCell<Option<CounterMs<TIM2>>>> = Mutex::new(RefCell::new(None));
+
+type LedPin     = gpioc::PC13<Output<PushPull>>;
+type RelayPin   = gpiob::PB9<Output<PushPull>>;
+static mut TIM_RELAY: Option<CounterMs<TIM3>> = None;
+static mut LED_RELAY_PIN: Option<LedPin> = None;
+static mut RELAY_PIN: Option<RelayPin> = None;
+
 
 #[entry]
 fn main() -> ! {
@@ -116,9 +129,13 @@ fn main() -> ! {
 
         // Generate an interrupt when the timer expires
         timer.listen(Event::Update);
-
+ 
         // Move the timer into our global storage
-        cortex_m::interrupt::free(|cs| *G_TIM.borrow(cs).borrow_mut() = Some(timer));
+        unsafe{
+            TIM_ANTI_BOUNCE = Some(timer);
+        }
+
+        //cortex_m::interrupt::free(|cs| *G_TIM.borrow(cs).borrow_mut() = Some(timer));
     }
 
     //          USART1 setup
@@ -143,6 +160,7 @@ fn main() -> ! {
         NVIC::unmask(pac::Interrupt::EXTI9_5);
         NVIC::unmask(pac::Interrupt::USART1);
         NVIC::unmask(Interrupt::TIM2);
+        NVIC::unmask(Interrupt::TIM3);
     }
 
     //onboard led
@@ -152,6 +170,15 @@ fn main() -> ! {
     //relay module output
     let mut relay = gpiob.pb9.into_push_pull_output(&mut gpiob.crh);
     relay.set_high();
+
+    let timer = dp.TIM3.counter_ms(&clocks);
+
+    unsafe{
+        LED_RELAY_PIN   = Some(led);
+        RELAY_PIN       = Some(relay);
+        TIM_RELAY       = Some(timer);
+    }
+
     let mut delay = cp.SYST.delay(&clocks);
 
     //green button setup
@@ -163,12 +190,14 @@ fn main() -> ! {
         if (command_mutex.is_some() && command_mutex.unwrap() == Command::Open)
             || green_buton.is_low()
         {
-            led.set_low();
-            relay.set_low();
-            delay.delay_ms(2_000_u16);
-            led.set_high();
-            relay.set_high();
-            cortex_m::interrupt::free(|cs| COMMAND_MUTEX.borrow(cs).replace(None));
+            let led_relay_pin = unsafe{ LED_RELAY_PIN.as_mut().unwrap()};
+            let relay_pin = unsafe{ RELAY_PIN.as_mut().unwrap()};
+            let timer = unsafe{ TIM_RELAY.as_mut().unwrap()};
+
+            led_relay_pin.set_low();
+            relay_pin.set_low();
+            timer.start(2.secs()).unwrap();
+            timer.listen(Event::Update);
         }
  
         if DOOR_BELL.load(Ordering::Relaxed) == 1 {
@@ -216,15 +245,25 @@ fn EXTI9_5() {
 }
 
 #[interrupt]
-fn TIM2() {
-    static mut TIM: Option<CounterMs<TIM2>> = None;
+fn TIM3() {
 
-    let tim = TIM.get_or_insert_with(|| {
-        cortex_m::interrupt::free(|cs| {
-            
-            G_TIM.borrow(cs).replace(None).unwrap()
-        })
-    });
+    let tim = unsafe { TIM_RELAY.as_mut().unwrap() };
+    let led_relay_pin = unsafe{ LED_RELAY_PIN.as_mut().unwrap()};
+    let relay_pin = unsafe{ RELAY_PIN.as_mut().unwrap()};
+
+    led_relay_pin.set_high();
+    relay_pin.set_high();
+    cortex_m::interrupt::free(|cs| COMMAND_MUTEX.borrow(cs).replace(None));
+    let _ = tim.wait();
+    tim.unlisten(Event::all());
+}
+
+#[interrupt]
+fn TIM2() {
+
+    let tim = unsafe {
+        TIM_ANTI_BOUNCE.as_mut().unwrap()
+    };
 
     let _ = tim.wait();
 }
@@ -279,31 +318,29 @@ fn usb_interrupt() {
 unsafe fn USART1() {
     cortex_m::interrupt::free(|cs| {
         if let Some(rx) = RX.as_mut() {
-            if rx.is_rx_not_empty() {
 
-                let mut buf_tx = [0u8; 1];
-                
-                if let Ok(w) = nb::block!(rx.read()) {
-  
-                    COMMAND_MUTEX.borrow(cs).set(Command::from_byte(w));
+            let mut buf_tx = [0u8; 1];
+            
+            if let Ok(w) = nb::block!(rx.read()) {
 
-                    let usb_command_mutex = COMMAND_MUTEX.borrow(cs).get();
+                COMMAND_MUTEX.borrow(cs).set(Command::from_byte(w));
+
+                let usb_command_mutex = COMMAND_MUTEX.borrow(cs).get();
 
 
-                    if usb_command_mutex.is_some() && usb_command_mutex.unwrap() == Command::GetMes {
-                        buf_tx[0] = DOOR_BELL.load(Ordering::Relaxed);
-    
-                        COMMAND_MUTEX.borrow(cs).replace(None);
+                if usb_command_mutex.is_some() && usb_command_mutex.unwrap() == Command::GetMes {
+                    buf_tx[0] = DOOR_BELL.load(Ordering::Relaxed);
 
-                        if let Some(tx) = TX.as_mut() {
-                            if let Err(_err) = nb::block!(tx.write(buf_tx[0])) {}
-                        }
-    
-                        DOOR_BELL.store(0, Ordering::Relaxed);
+                    COMMAND_MUTEX.borrow(cs).replace(None);
+
+                    if let Some(tx) = TX.as_mut() {
+                        if let Err(_err) = nb::block!(tx.write(buf_tx[0])) {}
                     }
 
+                    DOOR_BELL.store(0, Ordering::Relaxed);
                 }
-            } 
+
+            }
         }
     })
 }
