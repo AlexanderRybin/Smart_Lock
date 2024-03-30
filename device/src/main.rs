@@ -24,8 +24,12 @@ use unwrap_infallible::UnwrapInfallible;
 use usb_device::{bus::UsbBusAllocator, prelude::*};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
-type Int_Pin = gpioa::PA7<Input<PullUp>>;
-static mut RED_BUTTON: Option<Int_Pin> = None;
+const RED_BUTTON_STATE_NONE         : u8 = 0;
+const RED_BUTTON_STATE_CHECK        : u8 = 1;
+const RED_BUTTON_STATE_CHECKED      : u8 = 2;
+const RED_BUTTON_STATE_CHECK_FAILED : u8 = 3;
+
+
 
 static mut INT_PIN: MaybeUninit<stm32f1xx_hal::gpio::gpioa::PA7<Input<PullUp>>> =
     MaybeUninit::uninit();
@@ -125,10 +129,10 @@ fn main() -> ! {
 
         
         let mut timer = dp.TIM2.counter_ms(&clocks);
-        timer.start(5.secs()).unwrap();
+        
 
         // Generate an interrupt when the timer expires
-        timer.listen(Event::Update);
+        //timer.listen(Event::Update);
  
         // Move the timer into our global storage
         unsafe{
@@ -200,19 +204,28 @@ fn main() -> ! {
             timer.listen(Event::Update);
         }
  
-        if DOOR_BELL.load(Ordering::Relaxed) == 1 {
+        if RED_BUTTON.load(Ordering::Relaxed) == RED_BUTTON_STATE_CHECK{
             let int_pin = unsafe { &mut *INT_PIN.as_mut_ptr() };
             int_pin.disable_interrupt(&mut dp.EXTI);
-            delay.delay_ms(100_u16);
-            if int_pin.is_low() {
-                DOOR_BELL.store(2, Ordering::Relaxed);
+            RED_BUTTON.store(RED_BUTTON_STATE_NONE, Ordering::Relaxed);
+            unsafe{
+                TIM_ANTI_BOUNCE.as_mut().unwrap().start(100.millis()).unwrap();
+                TIM_ANTI_BOUNCE.as_mut().unwrap().listen(Event::Update);
             }
-            delay.delay_ms(900_u16);
+        } else if RED_BUTTON.load(Ordering::Relaxed) == RED_BUTTON_STATE_CHECKED {
+            let int_pin = unsafe { &mut *INT_PIN.as_mut_ptr() };
             int_pin.enable_interrupt(&mut dp.EXTI);
+            DOOR_BELL.store(2, Ordering::Relaxed);
+            RED_BUTTON.store(RED_BUTTON_STATE_NONE, Ordering::Relaxed);
+        } else if RED_BUTTON.load(Ordering::Relaxed) == RED_BUTTON_STATE_CHECK_FAILED {
+            let int_pin = unsafe { &mut *INT_PIN.as_mut_ptr() };
+            int_pin.enable_interrupt(&mut dp.EXTI);
+            RED_BUTTON.store(RED_BUTTON_STATE_NONE, Ordering::Relaxed);
         }
     }
 }
 
+static RED_BUTTON: AtomicU8 = AtomicU8::new(0);
 static DOOR_BELL: AtomicU8 = AtomicU8::new(0);
 static COMMAND_MUTEX: Mutex<Cell<Option<Command>>> = Mutex::new(Cell::new(None));
 
@@ -238,7 +251,7 @@ impl Command {
 fn EXTI9_5() {
     let int_pin = unsafe { &mut *INT_PIN.as_mut_ptr() };
     if int_pin.check_interrupt() {
-        DOOR_BELL.store(1, Ordering::Relaxed);
+        RED_BUTTON.store(RED_BUTTON_STATE_CHECK, Ordering::Relaxed);
         // if we don't clear this bit, the ISR would trigger indefinitely
         int_pin.clear_interrupt_pending_bit();
     }
@@ -264,7 +277,13 @@ fn TIM2() {
     let tim = unsafe {
         TIM_ANTI_BOUNCE.as_mut().unwrap()
     };
-
+    let int_pin = unsafe { &mut *INT_PIN.as_mut_ptr() };
+    if int_pin.is_low() {
+        RED_BUTTON.store(RED_BUTTON_STATE_CHECKED, Ordering::Relaxed);
+    } else {
+        RED_BUTTON.store(RED_BUTTON_STATE_CHECK_FAILED, Ordering::Relaxed);
+    }
+    tim.unlisten(Event::all());
     let _ = tim.wait();
 }
 
